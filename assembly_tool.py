@@ -88,25 +88,43 @@ def format_params(params_dict):
     return " ".join(params)
 
 def download_reference_genome(url, output_dir1, logger):
-    """Download reference genome or GFF file with a spinner."""
+    """Download reference genome or GFF file and ensure it's decompressed."""
     filename = os.path.join(output_dir1, os.path.basename(url))
-    if not os.path.exists(filename):
-        logger.info(f"Downloading {url} to {output_dir1}")
-        with tqdm(total=100, desc="Downloading", bar_format="{desc}: {percentage:3.0f}%|{bar}|") as pbar:
-            for _ in range(10):
-                time.sleep(0.1)
-                pbar.update(10)
-            result = subprocess.run(
-                f"wget -P {output_dir1} {url}",
+    final_filename = filename[:-3]  # Remove .gz extension
+    
+    if not os.path.exists(final_filename):
+        # Download the file if needed
+        if not os.path.exists(filename):
+            logger.info(f"Downloading {url} to {output_dir1}")
+            with tqdm(total=100, desc="Downloading", bar_format="{desc}: {percentage:3.0f}%|{bar}|") as pbar:
+                for _ in range(10):
+                    time.sleep(0.1)
+                    pbar.update(10)
+                result = subprocess.run(
+                    f"wget -P {output_dir1} {url}",
+                    shell=True,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                logger.info(f"wget output: {result.stdout}")
+                if result.stderr:
+                    logger.error(f"wget error: {result.stderr}")
+        
+        # Decompress the file
+        try:
+            logger.info(f"Decompressing {filename}")
+            subprocess.run(
+                f"gunzip -f {filename}",
                 shell=True,
-                check=True,
-                capture_output=True,
-                text=True
+                check=True
             )
-            logger.info(f"wget output: {result.stdout}")
-            if result.stderr:
-                logger.error(f"wget error: {result.stderr}")
-    return filename[:-3]
+            logger.info(f"Successfully decompressed to {final_filename}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to decompress {filename}: {e.stderr}")
+            raise
+    
+    return final_filename
 
 def fetch_assembly_data_from_config(config, logger):
     """Fetch assembly data from NCBI using Entrez."""
@@ -144,13 +162,14 @@ def fetch_assembly_data_from_config(config, logger):
             "FtpPath_Assembly_rpt", "FtpPath_Stats_rpt"
         ]
         df = pd.DataFrame(data, columns=columns)
+        logger.info(f"Fetched {len(df)} assemblies for {organism}")
         return df
     except Exception as e:
         logger.error(f"Error fetching assembly data: {e}")
         raise
 
 def filter_rows_by_cities(df, location, num_assemblies=None, logger=None):
-    """Filter rows by location and limit to num_assemblies."""
+    """Filter rows by location and limit to num_assemblies if specified."""
     indian_cities = [
         "IND", "Indian", "india", "India", "Agartala", "Ahmedabad", "Aizawl", "Ajmer", "Allahabad", "Amritsar",
         "Anand", "Avikanagar", "Aurangabad", "Amravati", "Bangalore", "Bareilly", "Batinda", "Belgavi", "Banglore", "Bengaluru",
@@ -169,19 +188,31 @@ def filter_rows_by_cities(df, location, num_assemblies=None, logger=None):
         "RCB", "ICMR", "IMTECH", "CSIR", "SPPU", "IIT", "NIT", "IISC", "IIIT", "Central of University", "IGIB", "ICGEB", "CDRI", "SRM", "AIIMS"
     ]
     
+    logger.info(f"Filtering assemblies for location: {location}")
+    logger.info(f"Total assemblies before filtering: {len(df)}")
+    logger.info(f"Unique Submitter Organizations: {df['SubmitterOrganization'].unique().tolist()}")
+    
     if location.lower() == "india":
         city_pattern = re.compile(r"\b(?:" + "|".join([re.escape(city) for city in indian_cities]) + r")\b", re.IGNORECASE)
         filtered_df = df[df["SubmitterOrganization"].str.contains(city_pattern, na=False)]
     else:
         filtered_df = df[df["SubmitterOrganization"].str.lower().str.contains(location.lower(), na=False)]
     
-    if num_assemblies is not None and len(filtered_df) > num_assemblies:
+    logger.info(f"Filtered {len(filtered_df)} assemblies for location: {location}")
+    logger.info(f"Filtered Submitter Organizations: {filtered_df['SubmitterOrganization'].tolist()}")
+    
+    if filtered_df.empty:
+        logger.warning("No assemblies matched the location filter.")
+        return filtered_df
+    
+    if num_assemblies is not None:
+        if num_assemblies <= 0:
+            logger.error("num_assemblies must be a positive integer")
+            raise ValueError("num_assemblies must be a positive integer")
         filtered_df = filtered_df.head(num_assemblies)
-        logger.info(f"Limited to {num_assemblies} assemblies for location: {location}")
+        logger.info(f"Limited to {num_assemblies} assemblies: {filtered_df['AssemblyAccession'].tolist()}")
     else:
-        logger.info(f"Filtered {len(filtered_df)} assemblies for location: {location}")
-        if num_assemblies is not None and len(filtered_df) < num_assemblies:
-            logger.warning(f"Requested {num_assemblies} assemblies, but only {len(filtered_df)} are available")
+        logger.info("Processing all available assemblies")
     
     return filtered_df
 
@@ -213,78 +244,76 @@ def rename_files(directory, successful_accessions, logger):
             else:
                 logger.warning(f"No valid accession found in filename {filename}")
 
-def process_accessions(assembly_ids_list, output_dir2, group, logger):
-    """Download assemblies for GCF and GCA accessions."""
-    gcf_accessions = [id for id in assembly_ids_list if id.startswith("GCF")]
-    gca_accessions = [id for id in assembly_ids_list if id.startswith("GCA")]
+def process_accessions(filtered_df, output_dir2, group, num_assemblies, logger):
+    """Download assemblies for GCF and GCA accessions, replacing failed downloads with others."""
     successful_accessions = []
+    attempted_accessions = set()
+    assembly_ids_list = filtered_df["AssemblyAccession"].tolist()
+    total_to_download = len(assembly_ids_list) if num_assemblies is None else min(num_assemblies, len(assembly_ids_list))
     
-    logger.info(f"Processing {len(gcf_accessions)} GCF and {len(gca_accessions)} GCA accessions")
+    logger.info(f"Processing up to {total_to_download} assemblies: {assembly_ids_list[:total_to_download]}")
     
-    for accession in tqdm(gcf_accessions + gca_accessions, desc="Downloading assemblies"):
+    index = 0
+    while len(successful_accessions) < total_to_download and index < len(assembly_ids_list):
+        accession = assembly_ids_list[index]
+        index += 1
+        
+        if accession in attempted_accessions:
+            continue
+        
         source = "refseq" if accession.startswith("GCF") else "genbank"
         command = f"ncbi-genome-download -s {source} -l all -F fasta -o {output_dir2} {group} --assembly-accessions {accession}"
-        try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                check=True,
-                capture_output=True,
-                text=True
-            )
-            logger.info(f"ncbi-genome-download output for {accession}: {result.stdout}")
-            if result.stderr:
-                logger.error(f"ncbi-genome-download error for {accession}: {result.stderr}")
-            successful_accessions.append(accession)
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"Failed to download {accession}: {e.stderr}")
+        logger.info(f"Running command: {command}")
+        
+        for attempt in range(3):  # Retry up to 3 times
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                logger.info(f"ncbi-genome-download output for {accession}: {result.stdout}")
+                if result.stderr:
+                    logger.warning(f"ncbi-genome-download stderr for {accession}: {result.stderr}")
+                successful_accessions.append(accession)
+                attempted_accessions.add(accession)
+                break
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e.stderr}")
+                if attempt == 2:
+                    logger.error(f"Failed to download {accession} after 3 attempts")
+                    attempted_accessions.add(accession)
+                    if num_assemblies is not None and len(successful_accessions) < num_assemblies and index < len(assembly_ids_list):
+                        logger.info(f"Replacing failed accession {accession} with next available assembly")
+                    break
+            time.sleep(2)
     
+    if len(successful_accessions) < total_to_download:
+        logger.warning(f"Could only download {len(successful_accessions)} of {total_to_download} requested assemblies")
+    
+    logger.info(f"Successfully downloaded {len(successful_accessions)} accessions: {successful_accessions}")
     return successful_accessions
 
 def decompress_and_rename(output_dir1, output_dir2, successful_accessions, logger):
-    """Decompress .gz files in place, move and rename .fna files."""
-    # Decompress .fna.gz files in their original locations
-    gunzip_command = f"find {output_dir2} -type f -name '*.fna.gz' -exec gunzip -f {{}} \\;"
-    try:
-        with tqdm(total=100, desc="Decompressing assembly files", bar_format="{desc}: {percentage:3.0f}%|{bar}|") as pbar:
-            for _ in range(10):
-                time.sleep(0.1)
-                pbar.update(10)
-            result = subprocess.run(
-                gunzip_command,
-                shell=True,
-                check=True,
-                capture_output=True,
-                text=True
-            )
-            logger.info(f"gunzip output for assemblies: {result.stdout}")
-            if result.stderr:
-                logger.error(f"gunzip error for assemblies: {result.stderr}")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to decompress assembly files: {e.stderr}")
-        raise
-
-    # Decompress reference genome and GFF in output_dir1
-    if os.path.exists(output_dir1):
-        ref_gunzip_command = f"gunzip -f {output_dir1}/*.gz"
+    """Decompress .gz files and rename them."""
+    # Decompress reference genomes
+    ref_files = [f for f in os.listdir(output_dir1) if f.endswith('.gz')]
+    for ref_file in ref_files:
         try:
-            result = subprocess.run(
-                ref_gunzip_command,
+            subprocess.run(
+                f"gunzip -f {os.path.join(output_dir1, ref_file)}",
                 shell=True,
-                check=True,
-                capture_output=True,
-                text=True
+                check=True
             )
-            logger.info(f"Reference gunzip output: {result.stdout}")
-            if result.stderr:
-                logger.error(f"Reference gunzip error: {result.stderr}")
+            logger.info(f"Decompressed reference file {ref_file}")
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to decompress reference files: {e.stderr}")
-            raise
+            logger.error(f"Failed to decompress reference file {ref_file}: {e.stderr}")
 
-    # Move .fna files to output_dir2 and rename them
+    # Process assembly files
     for accession in successful_accessions:
-        find_command = f"find {output_dir2} -type f -name '*.fna'"
+        find_command = f"find {output_dir2} -name '*{accession}*.fna.gz'"
         try:
             result = subprocess.run(
                 find_command,
@@ -293,29 +322,36 @@ def decompress_and_rename(output_dir1, output_dir2, successful_accessions, logge
                 capture_output=True,
                 text=True
             )
-            fna_files = result.stdout.strip().split('\n')
-            for fna_file in fna_files:
-                if fna_file:
+            gz_files = result.stdout.strip().split('\n')
+            
+            for gz_file in gz_files:
+                if not gz_file:
+                    continue
+                    
+                try:
+                    subprocess.run(
+                        f"gunzip -f {gz_file}",
+                        shell=True,
+                        check=True
+                    )
+                    logger.info(f"Decompressed {gz_file}")
+                    
+                    fna_file = gz_file[:-3]
                     new_path = os.path.join(output_dir2, f"{accession}.fna")
                     os.rename(fna_file, new_path)
                     logger.info(f"Moved and renamed {fna_file} to {new_path}")
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Failed to process {gz_file}: {e.stderr}")
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to find or move .fna files for {accession}: {e.stderr}")
-            raise
-
-    # Clean up empty directories
+            logger.error(f"Failed to find files for {accession}: {e.stderr}")
+    
     cleanup_command = f"find {output_dir2} -type d -empty -delete"
     try:
-        result = subprocess.run(
+        subprocess.run(
             cleanup_command,
             shell=True,
-            check=True,
-            capture_output=True,
-            text=True
+            check=True
         )
-        logger.info(f"Cleanup output: {result.stdout}")
-        if result.stderr:
-            logger.error(f"Cleanup error: {result.stderr}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to clean up empty directories: {e.stderr}")
 
@@ -354,7 +390,6 @@ def run_prokka_with_env(accession, input_file, output_dir4, env_name, kingdom, p
         return
     prokka_params_str = format_params(prokka_params)
     
-    # Get Conda base path
     try:
         conda_base = subprocess.run(
             "conda info --base",
@@ -367,7 +402,6 @@ def run_prokka_with_env(accession, input_file, output_dir4, env_name, kingdom, p
         logger.error(f"Failed to get Conda base path: {e.stderr}")
         raise
 
-    # Construct Prokka command with Conda initialization
     prokka_command = (
         f"source {conda_base}/etc/profile.d/conda.sh && "
         f"conda activate {env_name} && "
@@ -416,20 +450,26 @@ def main():
     parser.add_argument(
         "--num-assemblies",
         type=int,
-        help="Maximum number of assemblies to fetch and process (default: all)"
+        default=None,
+        help="Maximum number of assemblies to fetch and process (default: all available)"
     )
     
     args = parser.parse_args()
     
     # Validate num-assemblies
     if args.num_assemblies is not None and args.num_assemblies <= 0:
-        logger.error("Error: --num-assemblies must be a positive integer")
+        print("Error: --num-assemblies must be a positive integer", file=sys.stderr)
         sys.exit(1)
     
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
     # Set up logging
+    global logger
     logger = setup_logging(args.output_dir)
     
     logger.info(f"Using output directory: {args.output_dir}")
+    logger.info(f"Number of assemblies requested: {args.num_assemblies if args.num_assemblies is not None else 'all available'}")
     
     # Load configuration
     config = load_config(args.config)
@@ -459,17 +499,22 @@ def main():
     logger.info(colored("[Step 2/6] Fetching and filtering assemblies...", "green"))
     df = fetch_assembly_data_from_config(config, logger)
     filtered_df = filter_rows_by_cities(df, config.get('location'), args.num_assemblies, logger)
-    if not filtered_df.empty and not df.empty:
-        save_filtered_data(df, os.path.join(parent_dir, "all_assemblies.tsv"), logger)
-        save_filtered_data(filtered_df, os.path.join(parent_dir, "filtered_assemblies.tsv"), logger)
-    else:
-        logger.warning("No data matched the filter.")
+    
+    if filtered_df.empty:
+        logger.error("No assemblies matched the filter criteria. Exiting.")
         return
+    
+    # Save assembly data
+    save_filtered_data(df, os.path.join(parent_dir, "all_assemblies.tsv"), logger)
+    save_filtered_data(filtered_df, os.path.join(parent_dir, "filtered_assemblies.tsv"), logger)
     
     # Step 3: Download filtered assemblies
     logger.info(colored("[Step 3/6] Downloading filtered assemblies...", "green"))
-    assembly_ids_list = filtered_df["AssemblyAccession"]
-    successful_accessions = process_accessions(assembly_ids_list, output_dir2, config.get('group'), logger)
+    successful_accessions = process_accessions(filtered_df, output_dir2, config.get('group'), args.num_assemblies, logger)
+    
+    if not successful_accessions:
+        logger.error("No assemblies were successfully downloaded. Exiting.")
+        return
     
     # Step 4: Decompress and rename files
     logger.info(colored("[Step 4/6] Decompressing and renaming files...", "green"))
