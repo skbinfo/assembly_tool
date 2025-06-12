@@ -1,15 +1,16 @@
-name: genome_tool_env
+name: assembly_tool_env
 channels:
-  - defaults
-  - bioconda
   - conda-forge
+  - bioconda
+  - defaults
 dependencies:
-  - python=3.10
+  - python>=3.8
   - pandas
+  - pyyaml
   - biopython
-  - yq
   - termcolor
   - tqdm
-  - prokka
-  - quast
   - ncbi-genome-download
+  - quast
+  - prokka
+  - wget
