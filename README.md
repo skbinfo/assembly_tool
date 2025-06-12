@@ -19,4 +19,7 @@ A Python-based pipeline for downloading, processing, and annotating genomic asse
 1. **Clone the Repository**:
    ```bash
    git clone https://github.com/skbinfo/assembly_tool.git
-   cd genome-annotation-pipeline
+   cd assembly_tool/
+2. **Setup and Create Environment**:
+   chmod +x scripts/install_tools.sh
+   ./scripts/install_tools.sh
