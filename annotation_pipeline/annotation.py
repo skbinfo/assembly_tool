@@ -12,6 +12,10 @@ import logging
 import sys
 import time
 
+# Initialize logger globally
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 # Custom filter for console to show only step messages
 class StepFilter(logging.Filter):
     def filter(self, record):
@@ -19,8 +23,9 @@ class StepFilter(logging.Filter):
 
 # Set up logging
 def setup_logging(output_dir):
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
+    """Configure logging with file and console handlers."""
+    # Clear existing handlers to avoid duplicates
+    logger.handlers.clear()
     
     # File handler for all logs
     log_file = os.path.join(output_dir, "pipeline.log")
@@ -34,12 +39,8 @@ def setup_logging(output_dir):
     console_handler.setLevel(logging.INFO)
     console_handler.addFilter(StepFilter())
     
-    # Clear existing handlers to avoid duplicates
-    logger.handlers.clear()
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
-    
-    return logger
 
 def load_config(config_file):
     """Load and validate configuration from YAML file."""
@@ -235,7 +236,7 @@ def process_accessions(assembly_ids_list, output_dir2, group, logger):
             )
             logger.info(f"ncbi-genome-download output for {accession}: {result.stdout}")
             if result.stderr:
-                logger.error(f"ncbi-genome-download error for {accession}: {result.stderr}")
+                logger.error(f"ncbi-genome-download error: {accession}: {result.stderr}")
             successful_accessions.append(accession)
         except subprocess.CalledProcessError as e:
             logger.warning(f"Failed to download {accession}: {e.stderr}")
@@ -371,8 +372,7 @@ def main():
         sys.exit(1)
     
     # Set up logging
-    global logger
-    logger = setup_logging(args.output_dir)
+    setup_logging(args.output_dir)
     
     logger.info(f"Using output directory: {args.output_dir}")
     
