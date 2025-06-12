@@ -1,0 +1,16 @@
+name: genome-annotation
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.9
+  - biopython
+  - ncbi-genome-download
+  - quast=5.2.0
+  - prokka=1.14.6
+  - tqdm
+  - termcolor
+  - pyyaml
+  - pandas
+  - wget
