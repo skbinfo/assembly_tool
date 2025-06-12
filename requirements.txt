@@ -1,1 +1,6 @@
-biopython ncbi-genome-download tqdm termcolor pyyaml pandas
+biopython 
+ncbi-genome-download 
+tqdm 
+termcolor 
+pyyaml 
+pandas
