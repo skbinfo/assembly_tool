@@ -1,0 +1,21 @@
+####this is a sample .yaml file for users to understand the way actual .yaml file needs to be constructed#####
+organism_query: "Mycobacterium[Organism]"
+email: "your@email.com"
+organism: "Mycobacterium tuberculosis"
+location: "India"
+reference_genome_url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/195/955/GCF_000195955.2_ASM19595v2/GCF_000195955.2_ASM19595v2_genomic.fna.gz"
+gff_url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/195/955/GCF_000195955.2_ASM19595v2/GCF_000195955.2_ASM19595v2_genomic.gff.gz"
+group: "bacteria"
+organism_type: "PK"
+quast_threads: 4
+quast_params:
+  min-contig: 500
+  no-icarus: true
+prokka_kingdom: "Bacteria"
+prokka_env: "genome-annotation"
+prokka_params:
+  evalue: "1e-06"
+  coverage: 90
+  genus: "Mycobacterium"
+  species: "tuberculosis"
+  compliant: true
