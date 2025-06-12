@@ -1,16 +1,15 @@
-name: genome-annotation
+name: genome_tool_env
 channels:
-  - conda-forge
-  - bioconda
   - defaults
+  - bioconda
+  - conda-forge
 dependencies:
-  - python=3.9
-  - biopython
-  - ncbi-genome-download
-  - quast=5.2.0
-  - prokka=1.14.6
-  - tqdm
-  - termcolor
-  - pyyaml
+  - python=3.10
   - pandas
-  - wget
+  - biopython
+  - yq
+  - termcolor
+  - tqdm
+  - prokka
+  - quast
+  - ncbi-genome-download
