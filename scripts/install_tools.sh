@@ -14,20 +14,33 @@ if ! command -v conda &> /dev/null; then
     fi
     bash miniconda.sh -b -p $HOME/miniconda
     export PATH="$HOME/miniconda/bin:$PATH"
-    source $HOME/miniconda/etc/profile.d/conda.sh
-    conda init
+    eval "$($HOME/miniconda/bin/conda shell.bash hook)"
+    conda init bash
 else
     echo "Conda is already installed."
+    eval "$(conda shell.bash hook)"
 fi
+
+# Ensure Miniconda is prioritized over Anaconda
+export PATH="$HOME/miniconda/bin:$PATH"
 
 # Create and activate Conda environment
 echo "Creating Conda environment 'genome-annotation'..."
-conda env create -f environment.yml
-conda activate genome-annotation
+conda env create -f environment.yml || {
+    echo "Failed to create Conda environment. Check environment.yml and Conda logs."
+    exit 1
+}
+conda activate genome-annotation || {
+    echo "Failed to activate genome-annotation environment."
+    exit 1
+}
 
 # Install Python package
 echo "Installing genome-annotation-pipeline..."
-pip install .
+pip install . || {
+    echo "Failed to install Python package."
+    exit 1
+}
 
 # Verify installation
 echo "Verifying installation..."
