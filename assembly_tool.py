@@ -242,27 +242,11 @@ def process_accessions(assembly_ids_list, output_dir2, group, logger):
     return successful_accessions
 
 def decompress_and_rename(output_dir1, output_dir2, successful_accessions, logger):
-    """Decompress .gz files and rename them."""
-    # Move .fna.gz files to output_dir2
-    mv_gz_command = f"find {output_dir2} -type f -name '*.fna.gz' -exec mv {{}} {output_dir2}/ \;"
+    """Decompress .gz files in place, move and rename .fna files."""
+    # Decompress .fna.gz files in their original locations
+    gunzip_command = f"find {output_dir2} -type f -name '*.fna.gz' -exec gunzip -f {{}} \\;"
     try:
-        result = subprocess.run(
-            mv_gz_command,
-            shell=True,
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        logger.info(f"Move .gz files output: {result.stdout}")
-        if result.stderr:
-            logger.error(f"Move .gz files error: {result.stderr}")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to move .gz files: {e.stderr}")
-    
-    # Decompress .gz files
-    gunzip_command = f"gunzip -f {output_dir2}/*.gz {output_dir1}/*.gz && find {output_dir2} -type d -empty -delete"
-    try:
-        with tqdm(total=100, desc="Decompressing files", bar_format="{desc}: {percentage:3.0f}%|{bar}|") as pbar:
+        with tqdm(total=100, desc="Decompressing assembly files", bar_format="{desc}: {percentage:3.0f}%|{bar}|") as pbar:
             for _ in range(10):
                 time.sleep(0.1)
                 pbar.update(10)
@@ -273,14 +257,67 @@ def decompress_and_rename(output_dir1, output_dir2, successful_accessions, logge
                 capture_output=True,
                 text=True
             )
-            logger.info(f"gunzip output: {result.stdout}")
+            logger.info(f"gunzip output for assemblies: {result.stdout}")
             if result.stderr:
-                logger.error(f"gunzip error: {result.stderr}")
+                logger.error(f"gunzip error for assemblies: {result.stderr}")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to decompress files: {e.stderr}")
-    
-    # Rename .fna files
-    rename_files(output_dir2, successful_accessions, logger)
+        logger.error(f"Failed to decompress assembly files: {e.stderr}")
+        raise
+
+    # Decompress reference genome and GFF in output_dir1
+    if os.path.exists(output_dir1):
+        ref_gunzip_command = f"gunzip -f {output_dir1}/*.gz"
+        try:
+            result = subprocess.run(
+                ref_gunzip_command,
+                shell=True,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            logger.info(f"Reference gunzip output: {result.stdout}")
+            if result.stderr:
+                logger.error(f"Reference gunzip error: {result.stderr}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to decompress reference files: {e.stderr}")
+            raise
+
+    # Move .fna files to output_dir2 and rename them
+    for accession in successful_accessions:
+        find_command = f"find {output_dir2} -type f -name '*.fna'"
+        try:
+            result = subprocess.run(
+                find_command,
+                shell=True,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            fna_files = result.stdout.strip().split('\n')
+            for fna_file in fna_files:
+                if fna_file:
+                    new_path = os.path.join(output_dir2, f"{accession}.fna")
+                    os.rename(fna_file, new_path)
+                    logger.info(f"Moved and renamed {fna_file} to {new_path}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to find or move .fna files for {accession}: {e.stderr}")
+            raise
+
+    # Clean up empty directories
+    cleanup_command = f"find {output_dir2} -type d -empty -delete"
+    try:
+        result = subprocess.run(
+            cleanup_command,
+            shell=True,
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        logger.info(f"Cleanup output: {result.stdout}")
+        if result.stderr:
+            logger.error(f"Cleanup error: {result.stderr}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to clean up empty directories: {e.stderr}")
 
 def run_quast(successful_accessions, output_dir2, output_dir3, reference_genome, gff_genome, threads, quast_params, logger):
     """Run QUAST on downloaded genomes with specified threads and additional parameters."""
@@ -316,8 +353,24 @@ def run_prokka_with_env(accession, input_file, output_dir4, env_name, kingdom, p
         logger.error(f"Input file {input_file} not found for Prokka")
         return
     prokka_params_str = format_params(prokka_params)
+    
+    # Get Conda base path
+    try:
+        conda_base = subprocess.run(
+            "conda info --base",
+            shell=True,
+            check=True,
+            capture_output=True,
+            text=True
+        ).stdout.strip()
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to get Conda base path: {e.stderr}")
+        raise
+
+    # Construct Prokka command with Conda initialization
     prokka_command = (
-        f"source activate {env_name} && "
+        f"source {conda_base}/etc/profile.d/conda.sh && "
+        f"conda activate {env_name} && "
         f"prokka --setupdb && "
         f"prokka --outdir {output_dir4}/{accession} --prefix {accession} "
         f"{input_file} --force --kingdom {kingdom} {prokka_params_str}"
@@ -334,7 +387,6 @@ def run_prokka_with_env(accession, input_file, output_dir4, env_name, kingdom, p
                 capture_output=True,
                 text=True,
                 executable="/bin/bash"
-"context": "This is the main script for the Assembly Tool, which automates the process of downloading, processing, and annotating genomic assemblies. It uses NCBI Entrez for fetching assembly data, QUAST for quality assessment, and Prokka for annotation. The script requires a YAML configuration file and supports both prokaryotic and eukaryotic organisms (though eukaryotic annotation is not yet implemented)."
             )
             logger.info(f"Prokka output for {accession}: {result.stdout}")
             if result.stderr:
@@ -342,6 +394,7 @@ def run_prokka_with_env(accession, input_file, output_dir4, env_name, kingdom, p
             logger.info(f"Prokka ran successfully for {accession}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Error running Prokka for {accession}: {e.stderr}")
+        raise
 
 def main():
     parser = argparse.ArgumentParser(description="Genomic Assembly and Annotation Pipeline")
