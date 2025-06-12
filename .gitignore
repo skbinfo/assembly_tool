@@ -1,0 +1,17 @@
+# Output directories
+output/
+genomes/
+assemblies/
+quast_output/
+prokka_output/
+
+# Log files
+*.log
+
+# Temporary files
+*.pyc
+__pycache__/
+*.tsv
+*.fna
+*.gff
+*.gz
