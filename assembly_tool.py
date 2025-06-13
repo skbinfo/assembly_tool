@@ -168,8 +168,8 @@ def fetch_assembly_data_from_config(config, logger):
         logger.error(f"Error fetching assembly data: {e}")
         raise
 
-def filter_rows_by_cities(df, location, num_assemblies=None, logger=None):
-    """Filter rows by location and limit to num_assemblies if specified."""
+def filter_rows_by_cities(df, location, logger):
+    """Filter rows by location without limiting the number of assemblies."""
     indian_cities = [
         "IND", "Indian", "india", "India", "Agartala", "Ahmedabad", "Aizawl", "Ajmer", "Allahabad", "Amritsar",
         "Anand", "Avikanagar", "Aurangabad", "Amravati", "Bangalore", "Bareilly", "Batinda", "Belgavi", "Banglore", "Bengaluru",
@@ -205,15 +205,7 @@ def filter_rows_by_cities(df, location, num_assemblies=None, logger=None):
         logger.warning("No assemblies matched the location filter.")
         return filtered_df
     
-    if num_assemblies is not None:
-        if num_assemblies <= 0:
-            logger.error("num_assemblies must be a positive integer")
-            raise ValueError("num_assemblies must be a positive integer")
-        filtered_df = filtered_df.head(num_assemblies)
-        logger.info(f"Limited to {num_assemblies} assemblies: {filtered_df['AssemblyAccession'].tolist()}")
-    else:
-        logger.info("Processing all available assemblies")
-    
+    logger.info(f"Returning {len(filtered_df)} assemblies for processing")
     return filtered_df
 
 def save_filtered_data(df, output_file, logger):
@@ -249,46 +241,47 @@ def process_accessions(filtered_df, output_dir2, group, num_assemblies, logger):
     successful_accessions = []
     attempted_accessions = set()
     assembly_ids_list = filtered_df["AssemblyAccession"].tolist()
-    total_to_download = len(assembly_ids_list) if num_assemblies is None else min(num_assemblies, len(assembly_ids_list))
+    total_to_download = len(assembly_ids_list) if num_assemblies is None else num_assemblies
     
-    logger.info(f"Processing up to {total_to_download} assemblies: {assembly_ids_list[:total_to_download]}")
+    logger.info(f"Attempting to download {total_to_download} assemblies from {len(assembly_ids_list)} available")
     
     index = 0
-    while len(successful_accessions) < total_to_download and index < len(assembly_ids_list):
-        accession = assembly_ids_list[index]
-        index += 1
-        
-        if accession in attempted_accessions:
-            continue
-        
-        source = "refseq" if accession.startswith("GCF") else "genbank"
-        command = f"ncbi-genome-download -s {source} -l all -F fasta -o {output_dir2} {group} --assembly-accessions {accession}"
-        logger.info(f"Running command: {command}")
-        
-        for attempt in range(3):  # Retry up to 3 times
-            try:
-                result = subprocess.run(
-                    command,
-                    shell=True,
-                    check=True,
-                    capture_output=True,
-                    text=True
-                )
-                logger.info(f"ncbi-genome-download output for {accession}: {result.stdout}")
-                if result.stderr:
-                    logger.warning(f"ncbi-genome-download stderr for {accession}: {result.stderr}")
-                successful_accessions.append(accession)
-                attempted_accessions.add(accession)
-                break
-            except subprocess.CalledProcessError as e:
-                logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e.stderr}")
-                if attempt == 2:
-                    logger.error(f"Failed to download {accession} after 3 attempts")
+    with tqdm(total=total_to_download, desc="Downloading assemblies") as pbar:
+        while len(successful_accessions) < total_to_download and index < len(assembly_ids_list):
+            accession = assembly_ids_list[index]
+            index += 1
+            
+            if accession in attempted_accessions:
+                continue
+            
+            source = "refseq" if accession.startswith("GCF") else "genbank"
+            command = f"ncbi-genome-download -s {source} -l all -F fasta -o {output_dir2} {group} --assembly-accessions {accession}"
+            logger.info(f"Running command: {command}")
+            
+            for attempt in range(3):  # Retry up to 3 times
+                try:
+                    result = subprocess.run(
+                        command,
+                        shell=True,
+                        check=True,
+                        capture_output=True,
+                        text=True
+                    )
+                    logger.info(f"ncbi-genome-download output for {accession}: {result.stdout}")
+                    if result.stderr:
+                        logger.warning(f"ncbi-genome-download stderr for {accession}: {result.stderr}")
+                    successful_accessions.append(accession)
                     attempted_accessions.add(accession)
-                    if num_assemblies is not None and len(successful_accessions) < num_assemblies and index < len(assembly_ids_list):
-                        logger.info(f"Replacing failed accession {accession} with next available assembly")
+                    pbar.update(1)
                     break
-            time.sleep(2)
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e.stderr}")
+                    if attempt == 2:
+                        logger.error(f"Failed to download {accession} after 3 attempts")
+                        attempted_accessions.add(accession)
+                        logger.info(f"Replacing failed accession {accession} with next available assembly")
+                        break
+                time.sleep(2)
     
     if len(successful_accessions) < total_to_download:
         logger.warning(f"Could only download {len(successful_accessions)} of {total_to_download} requested assemblies")
@@ -498,7 +491,7 @@ def main():
     # Step 2: Fetch and filter assemblies
     logger.info(colored("[Step 2/6] Fetching and filtering assemblies...", "green"))
     df = fetch_assembly_data_from_config(config, logger)
-    filtered_df = filter_rows_by_cities(df, config.get('location'), args.num_assemblies, logger)
+    filtered_df = filter_rows_by_cities(df, config.get('location'), logger)
     
     if filtered_df.empty:
         logger.error("No assemblies matched the filter criteria. Exiting.")
