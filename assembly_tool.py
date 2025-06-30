@@ -126,6 +126,33 @@ def download_reference_genome(url, output_dir1, logger):
     
     return final_filename
 
+def read_assembly_file(assembly_file, logger):
+    """Read and validate assembly accession IDs from a text file."""
+    accession_pattern = re.compile(r"GC[AF]_\d{9}\.\d")
+    valid_accessions = []
+    
+    try:
+        with open(assembly_file, 'r') as f:
+            lines = [line.strip() for line in f if line.strip()]
+        
+        for line in lines:
+            if accession_pattern.fullmatch(line):
+                valid_accessions.append(line)
+            else:
+                logger.warning(f"Invalid accession ID in {assembly_file}: {line}")
+        
+        if not valid_accessions:
+            raise ValueError(f"No valid accession IDs found in {assembly_file}")
+        
+        logger.info(f"Read {len(valid_accessions)} valid accession IDs from {assembly_file}: {valid_accessions}")
+        return valid_accessions
+    except FileNotFoundError:
+        logger.error(f"Assembly file {assembly_file} not found")
+        raise
+    except Exception as e:
+        logger.error(f"Error reading assembly file {assembly_file}: {e}")
+        raise
+
 def fetch_assembly_data_from_config(config, logger):
     """Fetch assembly data from NCBI using Entrez."""
     try:
@@ -241,9 +268,9 @@ def process_accessions(filtered_df, output_dir2, group, num_assemblies, logger):
     successful_accessions = []
     attempted_accessions = set()
     assembly_ids_list = filtered_df["AssemblyAccession"].tolist()
-    total_to_download = len(assembly_ids_list) if num_assemblies is None else num_assemblies
+    total_to_download = len(assembly_ids_list) if num_assemblies is None else min(num_assemblies, len(assembly_ids_list))
     
-    logger.info(f"Attempting to download {total_to_download} assemblies from {len(assembly_ids_list)} available")
+    logger.info(f"Attempting to download {total_to_download} assemblies from {len(assembly_ids_list)} available: {assembly_ids_list[:total_to_download]}")
     
     index = 0
     with tqdm(total=total_to_download, desc="Downloading assemblies") as pbar:
@@ -446,6 +473,12 @@ def main():
         default=None,
         help="Maximum number of assemblies to fetch and process (default: all available)"
     )
+    parser.add_argument(
+        "--assembly-file",
+        type=str,
+        default=None,
+        help="Path to a text file containing assembly accession IDs to process directly"
+    )
     
     args = parser.parse_args()
     
@@ -463,6 +496,8 @@ def main():
     
     logger.info(f"Using output directory: {args.output_dir}")
     logger.info(f"Number of assemblies requested: {args.num_assemblies if args.num_assemblies is not None else 'all available'}")
+    if args.assembly_file:
+        logger.info(f"Using assembly file: {args.assembly_file}")
     
     # Load configuration
     config = load_config(args.config)
@@ -488,21 +523,29 @@ def main():
     reference_genome = download_reference_genome(config.get('reference_genome_url'), output_dir1, logger)
     gff_genome = download_reference_genome(config.get('gff_url'), output_dir1, logger)
     
-    # Step 2: Fetch and filter assemblies
-    logger.info(colored("[Step 2/6] Fetching and filtering assemblies...", "green"))
-    df = fetch_assembly_data_from_config(config, logger)
-    filtered_df = filter_rows_by_cities(df, config.get('location'), logger)
-    
-    if filtered_df.empty:
-        logger.error("No assemblies matched the filter criteria. Exiting.")
-        return
-    
-    # Save assembly data
-    save_filtered_data(df, os.path.join(parent_dir, "all_assemblies.tsv"), logger)
-    save_filtered_data(filtered_df, os.path.join(parent_dir, "filtered_assemblies.tsv"), logger)
+    # Step 2: Fetch or read assemblies
+    logger.info(colored("[Step 2/6] Preparing assemblies...", "green"))
+    if args.assembly_file:
+        # Read user-provided assembly IDs
+        assembly_ids = read_assembly_file(args.assembly_file, logger)
+        # Create a minimal DataFrame for process_accessions
+        filtered_df = pd.DataFrame({"AssemblyAccession": assembly_ids})
+        save_filtered_data(filtered_df, os.path.join(parent_dir, "user_provided_assemblies.tsv"), logger)
+    else:
+        # Fetch and filter assemblies
+        df = fetch_assembly_data_from_config(config, logger)
+        filtered_df = filter_rows_by_cities(df, config.get('location'), logger)
+        
+        if filtered_df.empty:
+            logger.error("No assemblies matched the filter criteria. Exiting.")
+            return
+        
+        # Save assembly data
+        save_filtered_data(df, os.path.join(parent_dir, "all_assemblies.tsv"), logger)
+        save_filtered_data(filtered_df, os.path.join(parent_dir, "filtered_assemblies.tsv"), logger)
     
     # Step 3: Download filtered assemblies
-    logger.info(colored("[Step 3/6] Downloading filtered assemblies...", "green"))
+    logger.info(colored("[Step 3/6] Downloading assemblies...", "green"))
     successful_accessions = process_accessions(filtered_df, output_dir2, config.get('group'), args.num_assemblies, logger)
     
     if not successful_accessions:
@@ -538,3 +581,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
